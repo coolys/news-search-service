@@ -816,7 +816,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Can't connect to Elasticsearch DB: %s", err)
 	}
-	db := "test_rest_layer"
+	db := "esocial_dev"
 
 	index := resource.NewIndex()
 
@@ -846,7 +846,7 @@ func main() {
 	index.Bind("data", data, es.NewHandler(client, db, "datas"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
-	index.Bind("feed", feed, es.NewHandler(client, db, "feeds"), resource.Conf{
+	index.Bind("feed", feed, es.NewHandler(client, db, "feed"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
 	index.Bind("news", news, es.NewHandler(client, db, "news"), resource.Conf{
