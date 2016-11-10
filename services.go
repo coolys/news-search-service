@@ -807,7 +807,12 @@ func (r myResponseFormatter) FormatList(ctx context.Context, headers http.Header
 
 func main() {
 	//client, err := elastic.NewClient(elastic.SetURL("http://52.211.157.19:9200"))
-	client, err := elastic.NewClient()
+	client, err := elastic.NewClient(
+    elastic.SetSniff(false),
+    elastic.SetURL("http://52.211.157.19:9200"),
+  )
+
+	//client, err := elastic.NewClient()
 	if err != nil {
 		log.Fatalf("Can't connect to Elasticsearch DB: %s", err)
 	}
