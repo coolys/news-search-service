@@ -1,2 +1,2 @@
-# news-data-services
-news-data-services for news provider access hbase database
+# news-search-services
+news-search-services for news provider access elasticsearch database
