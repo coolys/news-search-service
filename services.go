@@ -3,14 +3,15 @@ package main
 import (
 	"log"
 	"net/http"
-
-	"github.com/rs/cors"
-	"github.com/rs/rest-layer-mongo"
 	"github.com/rs/rest-layer/resource"
-	"github.com/rs/rest-layer/rest"
 	"github.com/rs/rest-layer/schema"
-	"gopkg.in/mgo.v2"
+	"github.com/rs/cors"
+  "github.com/rs/rest-layer/rest"
+	"gopkg.in/olivere/elastic.v3"
+	//"gopkg.in/olivere/elastic.v5"
+	"github.com/rs/rest-layer-es"
 	"golang.org/x/net/context"
+
 )
 
 var (
@@ -805,56 +806,57 @@ func (r myResponseFormatter) FormatList(ctx context.Context, headers http.Header
 }
 
 func main() {
-	session, err := mgo.Dial("127.0.0.1")
+	//client, err := elastic.NewClient(elastic.SetURL("http://52.211.157.19:9200"))
+	client, err := elastic.NewClient()
 	if err != nil {
-		log.Fatalf("Can't connect to MongoDB: %s", err)
+		log.Fatalf("Can't connect to Elasticsearch DB: %s", err)
 	}
 	db := "test_rest_layer"
 
 	index := resource.NewIndex()
 
-	users := index.Bind("users", user, mongo.NewHandler(session, db, "users"), resource.Conf{
+	users := index.Bind("users", user, es.NewHandler(client, db, "users"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
 
-	categories := index.Bind("categories", category, mongo.NewHandler(session, db, "categories"), resource.Conf{
+	categories := index.Bind("categories", category, es.NewHandler(client, db, "categories"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
-	categories.Bind("parent", "parent", category, mongo.NewHandler(session, db, "categories"), resource.Conf{
-		AllowedModes: resource.ReadWrite,
-	})
-
-	index.Bind("posts", post, mongo.NewHandler(session, db, "posts"), resource.Conf{
+	categories.Bind("parent", "parent", category, es.NewHandler(client, db, "categories"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
 
-	users.Bind("posts", "user", post, mongo.NewHandler(session, db, "posts"), resource.Conf{
+	index.Bind("posts", post, es.NewHandler(client, db, "posts"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
 
-	users.Bind("feeds", "user", post, mongo.NewHandler(session, db, "feeds"), resource.Conf{
+	users.Bind("posts", "user", post, es.NewHandler(client, db, "posts"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
 
-	index.Bind("data", data, mongo.NewHandler(session, db, "datas"), resource.Conf{
+	users.Bind("feeds", "user", post, es.NewHandler(client, db, "feeds"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
-	index.Bind("feed", feed, mongo.NewHandler(session, db, "feeds"), resource.Conf{
+
+	index.Bind("data", data, es.NewHandler(client, db, "datas"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
-	index.Bind("news", news, mongo.NewHandler(session, db, "news"), resource.Conf{
+	index.Bind("feed", feed, es.NewHandler(client, db, "feeds"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
-	index.Bind("video", video, mongo.NewHandler(session, db, "videos"), resource.Conf{
+	index.Bind("news", news, es.NewHandler(client, db, "news"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
-	index.Bind("photo", photo, mongo.NewHandler(session, db, "photos"), resource.Conf{
+	index.Bind("video", video, es.NewHandler(client, db, "videos"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
-	index.Bind("country", video, mongo.NewHandler(session, db, "countries"), resource.Conf{
+	index.Bind("photo", photo, es.NewHandler(client, db, "photos"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
-	index.Bind("channel", channel, mongo.NewHandler(session, db, "channels"), resource.Conf{
+	index.Bind("country", video, es.NewHandler(client, db, "countries"), resource.Conf{
+		AllowedModes: resource.ReadWrite,
+	})
+	index.Bind("channel", channel, es.NewHandler(client, db, "channels"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
 
