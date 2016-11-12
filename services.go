@@ -805,21 +805,7 @@ func (r myResponseFormatter) FormatList(ctx context.Context, headers http.Header
 	}
 }
 
-func main() {
-	//client, err := elastic.NewClient(elastic.SetURL("http://52.211.157.19:9200"))
-	client, err := elastic.NewClient(
-    elastic.SetSniff(false),
-    elastic.SetURL("http://52.211.157.19:9200"),
-  )
-
-	//client, err := elastic.NewClient()
-	if err != nil {
-		log.Fatalf("Can't connect to Elasticsearch DB: %s", err)
-	}
-	db := "esocial_dev"
-
-	index := resource.NewIndex()
-
+func exposesWithElasticsearchDB( db string, index resource.Index, client *elastic.Client) {
 	users := index.Bind("users", user, es.NewHandler(client, db, "users"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
@@ -864,6 +850,24 @@ func main() {
 	index.Bind("channel", channel, es.NewHandler(client, db, "channels"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
+}
+
+func main() {
+	//client, err := elastic.NewClient(elastic.SetURL("http://52.211.157.19:9200"))
+	client, err := elastic.NewClient(
+    elastic.SetSniff(false),
+    elastic.SetURL("http://52.211.157.19:9200"),
+  )
+
+	//client, err := elastic.NewClient()
+	if err != nil {
+		log.Fatalf("Can't connect to Elasticsearch DB: %s", err)
+	}
+	db := "esocial_dev"
+
+	index := resource.NewIndex()
+
+ exposesWithElasticsearchDB(db, index, client)
 
 	api, err := rest.NewHandler(index)
 	if err != nil {
