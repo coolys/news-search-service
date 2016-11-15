@@ -1,18 +1,247 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"log"
 	"net/http"
-	"github.com/rs/rest-layer/resource"
-	"github.com/rs/rest-layer/schema"
-	"github.com/rs/cors"
-  "github.com/rs/rest-layer/rest"
-	"gopkg.in/olivere/elastic.v3"
-	//"gopkg.in/olivere/elastic.v5"
-	"github.com/rs/rest-layer-es"
+	"time"
+	"github.com/dgrijalva/jwt-go"
+	"github.com/dgrijalva/jwt-go/request"
+	"github.com/cool-rest/alice"
+	"github.com/cool-rest/rest-layer/resource"
+	"github.com/cool-rest/rest-layer/rest"
+	"github.com/cool-rest/rest-layer/schema"
+	"github.com/cool-rest/xaccess"
+	"github.com/cool-rest/xlog"
 	"golang.org/x/net/context"
-
+	"gopkg.in/olivere/elastic.v3"
+	"github.com/cool-rest/rest-layer-es"
 )
+
+// NOTE: this example show how to integrate REST Layer with JWT. No authentication is performed
+// in this example. It is assumed that you are using a third party authentication system that
+// generates JWT tokens with a user_id claim.
+
+type key int
+
+const userKey key = 0
+
+// NewContextWithUser stores user into context
+func NewContextWithUser(ctx context.Context, user *resource.Item) context.Context {
+	return context.WithValue(ctx, userKey, user)
+}
+
+// UserFromContext retrieves user from context
+func UserFromContext(ctx context.Context) (*resource.Item, bool) {
+	user, ok := ctx.Value(userKey).(*resource.Item)
+	return user, ok
+}
+
+func UserFromToken(users *resource.Resource, ctx context.Context, r *http.Request) (*resource.Item, bool) {
+	tokenString, err := request.HeaderExtractor{"Authorization"}.ExtractToken(r)
+	fmt.Println("tokenString:", tokenString)
+	if tokenString == "" {
+		return nil, false
+	}
+
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		return []byte("secret"), nil
+	})
+	if token.Valid {
+		fmt.Println("You look nice today")
+		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+			fmt.Println(claims["user_id"])
+			user, err := users.Get(ctx, r, claims["user_id"])
+			if err == nil && user != nil {
+				return user, true
+			} else {
+				return nil, false
+			}
+		} else {
+			fmt.Println(err)
+			return nil, false
+		}
+	} else {
+		fmt.Println("Not valid")
+		return nil, false
+	}
+
+}
+
+// NewJWTHandler parse and validates JWT token if present and store it in the net/context
+func NewJWTHandler(users *resource.Resource, jwtKeyFunc jwt.Keyfunc) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			token, err := request.ParseFromRequest(r, request.OAuth2Extractor, jwtKeyFunc)
+			if err == request.ErrNoTokenInRequest {
+				// If no token is found, let REST Layer hooks decide if the resource is public or not
+				next.ServeHTTP(w, r)
+				return
+			}
+			if err != nil || !token.Valid {
+				// Here you may want to return JSON error
+				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+				return
+			}
+			claims := token.Claims.(jwt.MapClaims)
+			userID, ok := claims["user_id"].(string)
+			if !ok || userID == "" {
+				// The provided token is malformed, user_id claim is missing
+				http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+				return
+			}
+			// Lookup the user by its id
+			ctx := r.Context()
+			user, err := users.Get(ctx, r, userID)
+			if user != nil && err == resource.ErrUnauthorized {
+				// Ignore unauthorized errors set by ourselves (see AuthResourceHook)
+				err = nil
+			}
+			if err != nil {
+				// If user resource storage handler returned an error, respond with an error
+				if err == resource.ErrNotFound {
+					http.Error(w, "Invalid credential", http.StatusForbidden)
+				} else {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+				return
+			}
+			// Store it into the request's context
+			ctx = NewContextWithUser(ctx, user)
+			r = r.WithContext(ctx)
+			// If xlog is setup, store the user as logger field
+			xlog.FromContext(ctx).SetField("user_id", user.ID)
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// AuthResourceHook is a resource event handler that protect the resource from unauthorized users
+type AuthResourceHook struct {
+	UserField string
+	users     *resource.Resource
+}
+
+// OnFind implements resource.FindEventHandler interface
+func (a AuthResourceHook) OnFind(ctx context.Context, r *http.Request, lookup *resource.Lookup, page, perPage int) error {
+	// Reject unauthorized users
+	fmt.Println("OnFind ctx:", ctx)
+	fmt.Println("OnFind r:", r)
+	user, found := UserFromToken(a.users, ctx, r)
+	if !found {
+		return resource.ErrUnauthorized
+	}
+	fmt.Println("user:", user)
+	// Add a lookup condition to restrict to result on objects owned by this user
+	/*lookup.AddQuery(schema.Query{
+		schema.Equal{Field: a.UserField, Value: user.ID},
+	})*/
+	return nil
+}
+
+// OnGot implements resource.GotEventHandler interface
+func (a AuthResourceHook) OnGot(ctx context.Context, r *http.Request, item **resource.Item, err *error) {
+	fmt.Println("OnGot ctx:", ctx)
+	fmt.Println("OnGot r:", r)
+	// Do not override existing errors
+	if err != nil {
+		return
+	}
+	// Reject unauthorized users
+	user, found := UserFromToken(a.users, ctx, r)
+	if !found {
+		*err = resource.ErrUnauthorized
+		return
+	}
+	fmt.Println("user:", user)
+	// Check access right
+	/*if u, found := (*item).Payload[a.UserField]; !found || u != user.ID {
+		*err = resource.ErrNotFound
+	}*/
+	return
+}
+
+// OnInsert implements resource.InsertEventHandler interface
+func (a AuthResourceHook) OnInsert(ctx context.Context, r *http.Request, items []*resource.Item) error {
+	fmt.Println("OnInsert ctx:", ctx)
+	fmt.Println("OnInsert r:", r)
+	user, found := UserFromToken(a.users, ctx, r)
+	if !found {
+		return resource.ErrUnauthorized
+	}
+	// Check access right
+	for _, item := range items {
+		if u, found := item.Payload[a.UserField]; found {
+			if u != user.ID {
+				return resource.ErrUnauthorized
+			}
+		} else {
+			// If no user set for the item, set it to current user
+			item.Payload[a.UserField] = user.ID
+		}
+	}
+	return nil
+}
+
+// OnUpdate implements resource.UpdateEventHandler interface
+func (a AuthResourceHook) OnUpdate(ctx context.Context, r *http.Request, item *resource.Item, original *resource.Item) error {
+	fmt.Println("OnUpdate ctx:", ctx)
+	fmt.Println("OnUpdate r:", r)
+	// Reject unauthorized users
+	user, found := UserFromToken(a.users, ctx, r)
+	if !found {
+		return resource.ErrUnauthorized
+	}
+	// Check access right
+	fmt.Println("original.Payload[a.UserField]:", original.Payload[a.UserField])
+	fmt.Println("original.Payload[a.UserField]:", original)
+	if u, found := original.Payload[a.UserField]; !found || u != user.ID {
+		fmt.Println("u:", u)
+		fmt.Println("user.ID:", user.ID)
+		fmt.Println("found:", found)
+		return resource.ErrUnauthorized
+	}
+	// Ensure user field is not altered
+	fmt.Println("item:", item)
+	/*
+		if u, found := item.Payload[a.UserField]; !found || u != user.ID {
+			eturn resource.ErrUnauthorized
+		}*/
+	return nil
+}
+
+// OnDelete implements resource.DeleteEventHandler interface
+func (a AuthResourceHook) OnDelete(ctx context.Context, r *http.Request, item *resource.Item) error {
+	fmt.Println("OnDelete ctx:", ctx)
+	fmt.Println("OnDelete r:", r)
+	// Reject unauthorized users
+	user, found := UserFromToken(a.users, ctx, r)
+	if !found {
+		return resource.ErrUnauthorized
+	}
+	// Check access right
+	if item.Payload[a.UserField] != user.ID {
+		return resource.ErrUnauthorized
+	}
+	return nil
+}
+
+// OnClear implements resource.ClearEventHandler interface
+func (a AuthResourceHook) OnClear(ctx context.Context, r *http.Request, lookup *resource.Lookup) error {
+	fmt.Println("OnClear ctx:", ctx)
+	fmt.Println("OnClear r:", r)
+	// Reject unauthorized users
+	user, found := UserFromToken(a.users, ctx, r)
+	if !found {
+		return resource.ErrUnauthorized
+	}
+	// Add a lookup condition to restrict to impact of the clear on objects owned by this user
+	lookup.AddQuery(schema.Query{
+		schema.Equal{Field: a.UserField, Value: user.ID},
+	})
+	return nil
+}
 
 var (
 	category = schema.Schema{
@@ -733,127 +962,72 @@ var (
 			},
 		},
 	}
-
+	// Define a user resource schema
 	user = schema.Schema{
 		Fields: schema.Fields{
-			"id":      schema.IDField,
-			"created": schema.CreatedField,
-			"updated": schema.UpdatedField,
+			"id": {
+				Validator: &schema.String{
+					MinLen: 2,
+					MaxLen: 50,
+				},
+			},
 			"name": {
 				Required:   true,
 				Filterable: true,
-				Sortable:   true,
 				Validator: &schema.String{
 					MaxLen: 150,
 				},
 			},
+			"password": schema.PasswordField,
 		},
 	}
 
 	// Define a post resource schema
 	post = schema.Schema{
 		Fields: schema.Fields{
-			"id":      schema.IDField,
-			"created": schema.CreatedField,
-			"updated": schema.UpdatedField,
+			"id": schema.IDField,
+			// Define a user field which references the user owning the post.
+			// See bellow, the content of this field is enforced by the fact
+			// that posts is a sub-resource of users.
 			"user": {
-				Required:   true,
+				//Required:   true,
 				Filterable: true,
 				Validator: &schema.Reference{
 					Path: "users",
 				},
+				/*OnInit: func(ctx context.Context, value interface{}) interface{} {
+					// If not set, set the user to currently logged user if any
+					fmt.Printf("value: %#v\n", value)
+					if value == nil {
+						if user, found := UserFromContext(ctx); found {
+							println("coucou")
+							value = user.ID
+						}
+					}
+					fmt.Printf("value: %#v\n", value)
+					return value
+				},*/
 			},
-			"public": {
-				Filterable: true,
-				Validator:  &schema.Bool{},
-			},
-			"meta": {
-				Schema: &schema.Schema{
-					Fields: schema.Fields{
-						"title": {
-							Required: true,
-							Validator: &schema.String{
-								MaxLen: 150,
-							},
-						},
-						"body": {
-							Validator: &schema.String{
-								MaxLen: 100000,
-							},
-						},
-					},
+			"title": {
+				Required: true,
+				Validator: &schema.String{
+					MaxLen: 150,
 				},
+			},
+			"body": {
+				Validator: &schema.String{},
 			},
 		},
 	}
 )
 
-type myResponseFormatter struct {
-	// Extending default response sender
-	rest.DefaultResponseFormatter
-}
-
-// Add a wrapper around the list with pagination info
-func (r myResponseFormatter) FormatList(ctx context.Context, headers http.Header, l *resource.ItemList, skipBody bool) (context.Context, interface{}) {
-	ctx, data := r.DefaultResponseFormatter.FormatList(ctx, headers, l, skipBody)
-	return ctx, map[string]interface{}{
-		"meta": map[string]int{
-			"total": l.Total,
-			"page":  l.Page,
-		},
-		"list": data,
-	}
-}
-
-func exposesWithElasticsearchDB( db string, index resource.Index, client *elastic.Client) {
-	users := index.Bind("users", user, es.NewHandler(client, db, "users"), resource.Conf{
-		AllowedModes: resource.ReadWrite,
-	})
-
-	categories := index.Bind("categories", category, es.NewHandler(client, db, "categories"), resource.Conf{
-		AllowedModes: resource.ReadWrite,
-	})
-	categories.Bind("parent", "parent", category, es.NewHandler(client, db, "categories"), resource.Conf{
-		AllowedModes: resource.ReadWrite,
-	})
-
-	index.Bind("posts", post, es.NewHandler(client, db, "posts"), resource.Conf{
-		AllowedModes: resource.ReadWrite,
-	})
-
-	users.Bind("posts", "user", post, es.NewHandler(client, db, "posts"), resource.Conf{
-		AllowedModes: resource.ReadWrite,
-	})
-
-	users.Bind("feeds", "user", post, es.NewHandler(client, db, "feeds"), resource.Conf{
-		AllowedModes: resource.ReadWrite,
-	})
-
-	index.Bind("data", data, es.NewHandler(client, db, "datas"), resource.Conf{
-		AllowedModes: resource.ReadWrite,
-	})
-	index.Bind("feed", feed, es.NewHandler(client, db, "feed"), resource.Conf{
-		AllowedModes: resource.ReadWrite,
-	})
-	index.Bind("news", news, es.NewHandler(client, db, "news"), resource.Conf{
-		AllowedModes: resource.ReadWrite,
-	})
-	index.Bind("video", video, es.NewHandler(client, db, "videos"), resource.Conf{
-		AllowedModes: resource.ReadWrite,
-	})
-	index.Bind("photo", photo, es.NewHandler(client, db, "photos"), resource.Conf{
-		AllowedModes: resource.ReadWrite,
-	})
-	index.Bind("country", video, es.NewHandler(client, db, "countries"), resource.Conf{
-		AllowedModes: resource.ReadWrite,
-	})
-	index.Bind("channel", channel, es.NewHandler(client, db, "channels"), resource.Conf{
-		AllowedModes: resource.ReadWrite,
-	})
-}
+var (
+	jwtSecret = flag.String("jwt-secret", "secret", "The JWT secret passphrase")
+)
 
 func main() {
-	//client, err := elastic.NewClient(elastic.SetURL("http://52.211.157.19:9200"))
+	flag.Parse()
+
 	client, err := elastic.NewClient(
     elastic.SetSniff(false),
     elastic.SetURL("http://52.211.157.19:9200"),
@@ -865,19 +1039,89 @@ func main() {
 	}
 	db := "esocial_dev"
 
+	// Create a REST API resource index
 	index := resource.NewIndex()
 
- exposesWithElasticsearchDB(db, index, client)
+	// Bind user on /users
+	users := index.Bind("users", user, es.NewHandler(client, db, "users"), resource.Conf{
+		AllowedModes: resource.ReadWrite,
+	})
 
+	// Init the db with some users (user registration is not handled by this example)
+	secret, _ := schema.Password{}.Validate("secret")
+	users.Insert(context.Background(), nil, []*resource.Item{
+		{ID: "jack", Updated: time.Now(), ETag: "abcd", Payload: map[string]interface{}{
+			"id":       "jack",
+			"name":     "Jack Sparrow",
+			"password": secret,
+		}},
+		{ID: "john", Updated: time.Now(), ETag: "efgh", Payload: map[string]interface{}{
+			"id":       "john",
+			"name":     "John Doe",
+			"password": secret,
+		}},
+	})
+
+	// Bind post on /posts
+	posts := index.Bind("posts", post, es.NewHandler(client, db, "posts"), resource.Conf{
+		AllowedModes: resource.ReadWrite,
+	})
+
+	index.Bind("categories", category, es.NewHandler(client, db, "categories"), resource.Conf{
+		AllowedModes: resource.ReadWrite,
+	})
+
+	data := index.Bind("data", data, es.NewHandler(client, db, "data"), resource.Conf{
+		AllowedModes: resource.ReadWrite,
+	})
+	feeds := index.Bind("feed", feed, es.NewHandler(client, db, "feed"), resource.Conf{
+		AllowedModes: resource.ReadWrite,
+	})
+	index.Bind("news", news, es.NewHandler(client, db, "news"), resource.Conf{
+		AllowedModes: resource.ReadWrite,
+	})
+	videos := index.Bind("video", video, es.NewHandler(client, db, "video"), resource.Conf{
+		AllowedModes: resource.ReadWrite,
+	})
+	index.Bind("photo", photo, es.NewHandler(client, db, "photo"), resource.Conf{
+		AllowedModes: resource.ReadWrite,
+	})
+	index.Bind("country", video, es.NewHandler(client, db, "countries"), resource.Conf{
+		AllowedModes: resource.ReadWrite,
+	})
+	index.Bind("channel", channel, es.NewHandler(client, db, "channels"), resource.Conf{
+		AllowedModes: resource.ReadWrite,
+	})
+
+	// Protect resources
+	users.Use(AuthResourceHook{UserField: "id", users: users})
+	videos.Use(AuthResourceHook{UserField:"id", users:users})
+	feeds.Use(AuthResourceHook{UserField:"id", users:users})
+	data.Use(AuthResourceHook{UserField:"id", users:users})
+	posts.Use(AuthResourceHook{UserField: "user", users: users})
+
+	// Create API HTTP handler for the resource graph
 	api, err := rest.NewHandler(index)
 	if err != nil {
 		log.Fatalf("Invalid API configuration: %s", err)
 	}
-	api.ResponseFormatter = &myResponseFormatter{}
 
-	http.Handle("/", cors.New(cors.Options{OptionsPassthrough: true}).Handler(api))
+	// Setup logger
+	c := alice.New()
+	c.Append(xlog.NewHandler(xlog.Config{}))
+	c.Append(xaccess.NewHandler())
+	c.Append(xlog.RequestHandler("req"))
+	c.Append(xlog.RemoteAddrHandler("ip"))
+	c.Append(xlog.UserAgentHandler("ua"))
+	c.Append(xlog.RefererHandler("ref"))
+	c.Append(xlog.RequestIDHandler("req_id", "Request-Id"))
+	resource.LoggerLevel = resource.LogLevelDebug
+	resource.Logger = func(ctx context.Context, level resource.LogLevel, msg string, fields map[string]interface{}) {
+		xlog.FromContext(ctx).OutputF(xlog.Level(level), 2, msg, fields)
+	}
+	// Bind the API under /
+	http.Handle("/", c.Then(api))
 
-	log.Print("Serving API on http://localhost:8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatal(err)
 	}
