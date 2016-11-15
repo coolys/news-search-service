@@ -1023,9 +1023,9 @@ func main() {
 	flag.Parse()
 
 	client, err := elastic.NewClient(
-    elastic.SetSniff(false),
-    elastic.SetURL("http://52.211.157.19:9200"),
-  )
+		elastic.SetSniff(false),
+		elastic.SetURL("http://52.211.157.19:9200"),
+	)
 
 	//client, err := elastic.NewClient()
 	if err != nil {
@@ -1089,13 +1089,13 @@ func main() {
 
 	// Protect resources
 	users.Use(AuthResourceHook{UserField: "id", users: users})
-	videos.Use(AuthResourceHook{UserField:"user", users:users})
-	feeds.Use(AuthResourceHook{UserField:"user", users:users})
-	data.Use(AuthResourceHook{UserField:"user", users:users})
-	photos.Use(AuthResourceHook{UserField:"user", users:users})
-	country.Use(AuthResourceHook{UserField:"user", users:users})
-	channel.Use(AuthResourceHook{UserField:"user", users:users})
-	category.Use(AuthResourceHook{UserField:"user", users:users})
+	videos.Use(AuthResourceHook{UserField: "user", users: users})
+	feeds.Use(AuthResourceHook{UserField: "user", users: users})
+	data.Use(AuthResourceHook{UserField: "user", users: users})
+	photos.Use(AuthResourceHook{UserField: "user", users: users})
+	country.Use(AuthResourceHook{UserField: "user", users: users})
+	channel.Use(AuthResourceHook{UserField: "user", users: users})
+	category.Use(AuthResourceHook{UserField: "user", users: users})
 	posts.Use(AuthResourceHook{UserField: "user", users: users})
 
 	// Create API HTTP handler for the resource graph
