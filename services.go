@@ -1067,7 +1067,7 @@ func main() {
 		AllowedModes: resource.ReadWrite,
 	})
 
-	index.Bind("categories", category, es.NewHandler(client, db, "categories"), resource.Conf{
+	category := index.Bind("categories", category, es.NewHandler(client, db, "categories"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
 
@@ -1083,13 +1083,13 @@ func main() {
 	videos := index.Bind("video", video, es.NewHandler(client, db, "video"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
-	index.Bind("photo", photo, es.NewHandler(client, db, "photo"), resource.Conf{
+	photos := index.Bind("photo", photo, es.NewHandler(client, db, "photo"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
-	index.Bind("country", video, es.NewHandler(client, db, "countries"), resource.Conf{
+	country := index.Bind("country", video, es.NewHandler(client, db, "countries"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
-	index.Bind("channel", channel, es.NewHandler(client, db, "channels"), resource.Conf{
+	channel := index.Bind("channel", channel, es.NewHandler(client, db, "channels"), resource.Conf{
 		AllowedModes: resource.ReadWrite,
 	})
 
@@ -1098,6 +1098,10 @@ func main() {
 	videos.Use(AuthResourceHook{UserField:"id", users:users})
 	feeds.Use(AuthResourceHook{UserField:"id", users:users})
 	data.Use(AuthResourceHook{UserField:"id", users:users})
+	photos.Use(AuthResourceHook{UserField:"id", users:users})
+	country.Use(AuthResourceHook{UserField:"id", users:users})
+	channel.Use(AuthResourceHook{UserField:"id", users:users})
+	category.Use(AuthResourceHook{UserField:"id", users:users})
 	posts.Use(AuthResourceHook{UserField: "user", users: users})
 
 	// Create API HTTP handler for the resource graph
