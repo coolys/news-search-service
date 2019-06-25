@@ -1024,7 +1024,7 @@ func main() {
 
 	client, err := elastic.NewClient(
 		elastic.SetSniff(false),
-		elastic.SetURL("http://52.211.157.19:9200"),
+		elastic.SetURL("http://ES_HOST:9200"),
 	)
 
 	//client, err := elastic.NewClient()
